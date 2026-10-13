@@ -1,0 +1,7 @@
+# build artifacts
+*.o
+pi-mc-bridge
+tests/run-tests
+
+# secrets: pi provider credential (chmod 600, never commit)
+.env

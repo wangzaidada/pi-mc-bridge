@@ -1,0 +1,32 @@
+schema: spec-driven
+
+context: |
+  Project: pi-mc-bridge —— 把 Minecraft Java 版服务端与 Pi Coding Agent 桥接起来的轻量 C 程序。
+  玩家在游戏里发 `<玩家名> @pi <问题>`，程序从 logs/latest.log 读到后调用 `pi` CLI，再通过 RCON 发 /tellraw 回游戏。
+
+  Tech stack: C11 + POSIX（pthread / fork+exec / poll / readdir），GCC，Makefile。仅 Linux，Windows/macOS 为未来扩展。
+  依赖都是系统自带，不引入第三方库（JSON 解析为手写的极简 NDJSON 行解析）。
+
+  运行拓扑（遵循原设计文档：单进程 + 多线程）：
+    - 主线程：日志监控循环（poll 间隔 500ms）-> 解析 @pi -> 白名单/冷却检查 -> 入队
+    - 工作线程：从阻塞队列取任务 -> 调 pi -> 构造 /tellraw -> 经 RCON 发送（含分段）
+    - 常驻内存目标 < 5 MB；工作线程数暂为 1，串行处理以避免 pi 并发耗尽资源
+    - 无 GUI，纯命令行常驻进程；日志输出到 stdout/stderr
+
+  外部接口（已实测确认，不要凭文档臆测）：
+    - pi：`pi --mode json --no-session --no-tools --model <provider>/<model> -p "<prompt>"`。
+      stdout 为 NDJSON，最后一条 assistant 的 message_end 形如
+      {"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"..."},{"type":"text","text":"真正的回复"}],...}}。
+      注意：content 是**块数组**，必须挑 type=="text" 的块、忽略 thinking 块；取最后一条 role=="assistant" 的 message_end。
+    - RCON：Minecraft 远程控制协议，小端 int32，登录类型 3、命令类型 2、响应类型 0，包尾两个 0 字节。
+  Domain: Minecraft 服务端运维 + AI Agent 集成 + 游戏内聊天机器人。
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
