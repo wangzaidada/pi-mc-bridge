@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <time.h>
 #include <pthread.h>
 
@@ -157,6 +158,49 @@ void dynbuf_printf(DynBuf *d, const char *fmt, ...)
     vsnprintf(d->buf + d->len, (size_t)need + 1, fmt, ap);
     va_end(ap);
     d->len += (size_t)need;
+}
+
+/* ---------- template substitution ---------- */
+
+void dynbuf_append_template(DynBuf *d, const char *tpl, const KV *vars,
+                            int var_count)
+{
+    if (!tpl)
+        return;
+
+    const char *p = tpl;
+    while (*p) {
+        if (*p != '{') {
+            dynbuf_append_char(d, *p++);
+            continue;
+        }
+        const char *close = strchr(p + 1, '}');
+        if (!close) {
+            /* No closing brace: treat the rest as literal text. */
+            dynbuf_append_str(d, p);
+            return;
+        }
+        size_t namelen = (size_t)(close - (p + 1));
+        const char *value = NULL;
+        bool matched = false;
+        for (int i = 0; i < var_count; i++) {
+            if (strlen(vars[i].name) == namelen &&
+                memcmp(vars[i].name, p + 1, namelen) == 0) {
+                value = vars[i].value;
+                matched = true;
+                break;
+            }
+        }
+        if (matched) {
+            if (value)
+                dynbuf_append_str(d, value);
+            p = close + 1;
+        } else {
+            /* Unknown placeholder: keep it verbatim. */
+            dynbuf_append(d, p, (size_t)(close - p) + 1);
+            p = close + 1;
+        }
+    }
 }
 
 /* ---------- JSON escaping ---------- */

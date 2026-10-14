@@ -160,9 +160,25 @@ void pi_client_free(PiClient *c)
     c->cmd = c->model = c->extra_args = NULL;
 }
 
-static char **build_argv(PiClient *c, const char *prompt)
+void pi_client_set_model(PiClient *c, const char *model)
 {
-    /* pi --mode json --no-session --no-tools [--model M] -p <prompt> */
+    if (!c)
+        return;
+    free(c->model);
+    c->model = (model && *model) ? xstrdup(model) : NULL;
+}
+
+void pi_client_set_timeout(PiClient *c, int timeout_ms)
+{
+    if (c && timeout_ms > 0)
+        c->timeout_ms = timeout_ms;
+}
+
+char **pi_build_argv(PiClient *c, const char *prompt)
+{
+    /* pi --mode json --no-session --no-tools [--model M] -p <prompt>.
+     * The list is fixed: the bridge transports `<player>: <text>` as data and
+     * never injects a system prompt (see design D3). Exposed for unit tests. */
     size_t n = 0;
     char **argv = malloc(sizeof(char *) * 12);
     if (!argv)
@@ -201,12 +217,12 @@ static int kill_and_reap(pid_t pid)
     return status;
 }
 
-PiStatus pi_ask(PiClient *c, const char *prompt, DynBuf *answer,
-                char **err_detail)
+PiStatus pi_run(PiClient *c, const char *prompt, DynBuf *raw, char **err_detail,
+                int *exit_status)
 {
     if (err_detail)
         *err_detail = NULL;
-    dynbuf_reset(answer);
+    dynbuf_reset(raw);
 
     int outpipe[2], errpipe[2];
     if (pipe(outpipe) != 0 || pipe(errpipe) != 0) {
@@ -237,7 +253,7 @@ PiStatus pi_ask(PiClient *c, const char *prompt, DynBuf *answer,
         close(errpipe[0]); close(errpipe[1]);
         /* Leave our signal dispositions default for the exec'd process. */
         signal(SIGTERM, SIG_DFL);
-        char **argv = build_argv(c, prompt);
+        char **argv = pi_build_argv(c, prompt);
         execvp(c->cmd, argv);
         /* exec failed */
         fprintf(stderr, "pi-mc-bridge: cannot exec %s: %s\n", c->cmd,
@@ -314,40 +330,50 @@ PiStatus pi_ask(PiClient *c, const char *prompt, DynBuf *answer,
     if (err_detail && errout.len)
         *err_detail = xstrdup(errout.buf);
 
-    PiStatus rc;
     if (timed_out) {
         LOG_WARNF("pi: timed out after %d ms", c->timeout_ms);
-        rc = PI_ERR_TIMEOUT;
-    } else {
-        bool stop_error = false;
-        char *error_message = NULL;
-        bool has_message = pi_parse_stream(out.buf ? out.buf : "",
-                                           out.len, answer,
-                                           &stop_error, &error_message);
-        if (stop_error) {
-            if (err_detail) {
-                free(*err_detail);
-                *err_detail = error_message ? error_message : xstrdup("pi reported an error");
-                error_message = NULL;
-            }
-            free(error_message);
-            rc = PI_ERR_STOP;
-        } else if (!has_message || answer->len == 0) {
-            /* No text. Distinguish a clean-but-empty result from a crash. */
-            if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
-                rc = PI_ERR_EXIT;
-            else
-                rc = PI_ERR_NO_TEXT;
-        } else if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-            /* Got text but a non-zero exit: prefer the text. */
-            LOG_DEBUGF("pi: exit status %d despite a reply", WEXITSTATUS(status));
-            rc = PI_OK;
-        } else {
-            rc = PI_OK;
-        }
+    } else if (exit_status) {
+        *exit_status = status;
     }
+
+    /* pi's stdout is handed back raw; interpretation is the reply shaper's job. */
+    dynbuf_append(raw, out.buf ? out.buf : "", out.len);
 
     dynbuf_free(&out);
     dynbuf_free(&errout);
-    return rc;
+    return timed_out ? PI_ERR_TIMEOUT : PI_OK;
+}
+
+PiStatus pi_extract_text(const char *raw, size_t len, int exit_status,
+                         DynBuf *answer, char **err_detail)
+{
+    if (err_detail)
+        *err_detail = NULL;
+    dynbuf_reset(answer);
+
+    bool stop_error = false;
+    char *error_message = NULL;
+    bool has_message = pi_parse_stream(raw ? raw : "", len, answer,
+                                       &stop_error, &error_message);
+    if (stop_error) {
+        if (err_detail)
+            *err_detail = error_message ? error_message
+                                        : xstrdup("pi reported an error");
+        else
+            free(error_message);
+        return PI_ERR_STOP;
+    }
+
+    if (!has_message || answer->len == 0) {
+        /* No text. Distinguish a clean-but-empty result from a crash. */
+        if (exit_status > 0 && WIFEXITED(exit_status) &&
+            WEXITSTATUS(exit_status) != 0)
+            return PI_ERR_EXIT;
+        return PI_ERR_NO_TEXT;
+    }
+
+    if (exit_status > 0 && WIFEXITED(exit_status) &&
+        WEXITSTATUS(exit_status) != 0)
+        LOG_DEBUGF("pi: exit status %d despite a reply", WEXITSTATUS(exit_status));
+    return PI_OK;
 }

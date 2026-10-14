@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <pthread.h>
 
+struct Trigger;
+
 typedef enum {
     QUEUE_OK = 0,
     QUEUE_FULL,      /* push rejected: capacity reached */
@@ -12,8 +14,9 @@ typedef enum {
 } QueueStatus;
 
 typedef struct {
-    char *player;   /* owning copy */
-    char *prompt;   /* owning copy */
+    const struct Trigger *trigger;  /* owning: the table lives for the process */
+    char *player;                   /* owning copy */
+    char *prompt;                   /* owning copy */
 } Task;
 
 typedef struct {
@@ -30,8 +33,11 @@ typedef struct {
 void   queue_init(TaskQueue *q, int capacity);
 void   queue_free(TaskQueue *q);
 
-/* Non-blocking on a full queue: returns QUEUE_FULL rather than waiting. */
-QueueStatus queue_push(TaskQueue *q, const char *player, const char *prompt);
+/* Non-blocking on a full queue: returns QUEUE_FULL rather than waiting.
+ * `trigger` must outlive the task (it points into the process-lifetime
+ * trigger table); pass NULL when no trigger is associated (tests). */
+QueueStatus queue_push(TaskQueue *q, const struct Trigger *trigger,
+                       const char *player, const char *prompt);
 
 /* Blocks until a task is available or the queue is shut down. On QUEUE_OK the
  * task's strings are transferred to the caller (free them with task_free). */

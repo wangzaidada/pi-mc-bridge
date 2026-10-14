@@ -33,6 +33,14 @@ char *xstrdup(const char *s);
 /* Monotonic milliseconds (CLOCK_MONOTONIC). */
 long long monotonic_ms(void);
 
+/* ---------- template substitution ---------- */
+
+/* One `{name}` -> value binding for dynbuf_append_template. */
+typedef struct {
+    const char *name;
+    const char *value;
+} KV;
+
 /* ---------- dynamic buffer ---------- */
 
 typedef struct {
@@ -50,6 +58,13 @@ void dynbuf_append_str(DynBuf *d, const char *s);
 void dynbuf_append_char(DynBuf *d, char c);
 void dynbuf_printf(DynBuf *d, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
+
+/* Append `tpl` to `d`, replacing each `{name}` found in `vars` with its value.
+ * Substitutions are looked up first-to-last, so earlier entries win. Unknown
+ * placeholders are preserved verbatim (a `{` with no matching `}` is copied as
+ * a literal). `value == NULL` behaves like an empty string. */
+void dynbuf_append_template(DynBuf *d, const char *tpl, const KV *vars,
+                            int var_count);
 
 /* ---------- JSON escaping ---------- */
 
