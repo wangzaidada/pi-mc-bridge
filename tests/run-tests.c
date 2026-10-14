@@ -1117,12 +1117,16 @@ static void test_rate_key(void)
         worker_init(&w, NULL, NULL, NULL, &cfg);
 
         TriggerTable t = {0};
-        Trigger *a = trigger_table_append(&t);
-        a->name = xstrdup("chat");
-        a->cooldown_ms = -1;
-        Trigger *b = trigger_table_append(&t);
-        b->name = xstrdup("join");
-        b->cooldown_ms = -1;
+        Trigger *a0 = trigger_table_append(&t);
+        a0->name = xstrdup("chat");
+        a0->cooldown_ms = -1;
+        Trigger *b0 = trigger_table_append(&t);
+        b0->name = xstrdup("join");
+        b0->cooldown_ms = -1;
+        /* Reacquire: the second append reallocs t.items, so the pointers
+         * returned by the appends above may dangle. */
+        Trigger *a = &t.items[0];
+        Trigger *b = &t.items[1];
 
         CHECK(worker_rate_allow(&w, a, "Steve"));   /* first time */
         CHECK(!worker_rate_allow(&w, a, "Steve"));  /* same trigger: cooling */
