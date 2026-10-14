@@ -241,6 +241,31 @@ static void build_allow_list(Config *c)
     free(work);
 }
 
+/* ---------- trigger synthesis ---------- */
+
+/* Without a configuration file, synthesize one chat trigger equivalent to the
+ * legacy single-prefix behaviour (design D6): keywords = {prefix}, chat
+ * extractor, dialog executor, inheriting the global cooldown and allow-list.
+ * This keeps existing CLI/env/systemd usage working unchanged. */
+static int synth_default_trigger(Config *c)
+{
+    Trigger *tr = trigger_table_append(&c->triggers);
+    if (!tr)
+        return -1;
+    tr->name = xstrdup("default");
+    tr->match = MATCH_CHAT;
+    tr->keywords = malloc(sizeof(char *));
+    if (!tr->keywords) {
+        return -1;
+    }
+    tr->keywords[0] = xstrdup(c->prefix);
+    tr->keyword_count = 1;
+    tr->extractor = xstrdup("chat");
+    tr->executor = xstrdup("dialog");
+    tr->cooldown_ms = -1;   /* inherit the global cooldown */
+    return 0;
+}
+
 int config_load(Config *cfg, int argc, char **argv)
 {
     set_defaults(cfg);
@@ -251,6 +276,15 @@ int config_load(Config *cfg, int argc, char **argv)
     if (validate(cfg) != 0)
         return -1;
     build_allow_list(cfg);
+    if (synth_default_trigger(cfg) != 0) {
+        fprintf(stderr, "error: out of memory building the trigger table\n");
+        return -1;
+    }
+    char terr[256];
+    if (trigger_validate(&cfg->triggers, terr, sizeof(terr)) != 0) {
+        fprintf(stderr, "error: %s\n", terr);
+        return -1;
+    }
     return 0;
 }
 
@@ -282,6 +316,7 @@ void config_free(Config *cfg)
             free(cfg->allow_list[i]);
         free(cfg->allow_list);
     }
+    trigger_table_free(&cfg->triggers);
     memset(cfg, 0, sizeof(*cfg));
 }
 

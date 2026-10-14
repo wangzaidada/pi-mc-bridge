@@ -12,6 +12,7 @@
 #include "pi_client.h"
 #include "queue.h"
 #include "rcon_client.h"
+#include "trigger.h"
 #include "util.h"
 #include "worker.h"
 
@@ -58,27 +59,28 @@ static void notify(Worker *w_unused, RconClient *rcon, const char *player,
 static void on_log_line(const char *line, void *user)
 {
     BridgeCtx *ctx = user;
-    ParsedRequest req;
+    TriggerEvent ev;
 
-    if (!parse_chat_line(line, ctx->cfg->prefix, &req))
+    if (!trigger_match(&ctx->cfg->triggers, line, &ev))
         return;
 
-    LOG_INFOF("request from %s: %.120s", req.player, req.prompt);
+    LOG_INFOF("request from %s (trigger '%s'): %.120s", ev.player,
+              ev.trigger->name, ev.text);
 
-    if (!config_player_allowed(ctx->cfg, req.player)) {
-        LOG_INFOF("ignoring %s (not on the allow-list)", req.player);
-        parsed_request_free(&req);
+    if (!config_player_allowed(ctx->cfg, ev.player)) {
+        LOG_INFOF("ignoring %s (not on the allow-list)", ev.player);
+        trigger_event_free(&ev);
         return;
     }
 
-    QueueStatus st = queue_push(ctx->queue, req.player, req.prompt);
+    QueueStatus st = queue_push(ctx->queue, ev.player, ev.text);
     if (st == QUEUE_FULL) {
-        LOG_WARNF("queue full, rejecting request from %s", req.player);
-        notify(NULL, ctx->rcon, req.player, "当前请求过多，请稍后再试。");
+        LOG_WARNF("queue full, rejecting request from %s", ev.player);
+        notify(NULL, ctx->rcon, ev.player, "当前请求过多，请稍后再试。");
     } else if (st == QUEUE_SHUTDOWN) {
-        LOG_INFOF("queue shutting down, dropping request from %s", req.player);
+        LOG_INFOF("queue shutting down, dropping request from %s", ev.player);
     }
-    parsed_request_free(&req);
+    trigger_event_free(&ev);
 }
 
 /* ---------- main ---------- */

@@ -6,10 +6,12 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "extractor.h"
 #include "parser.h"
 #include "pi_client.h"
 #include "queue.h"
 #include "rcon_client.h"
+#include "trigger.h"
 #include "util.h"
 #include "worker.h"
 
@@ -142,6 +144,255 @@ static void test_parser(void)
         CHECK(!is_valid_player_name("has space"));
         CHECK(!is_valid_player_name("bad-name"));
         CHECK(!is_valid_player_name("toolongname1234567890"));
+    }
+}
+
+/* ---------- trigger table & extractors ---------- */
+
+static void set_keywords(Trigger *tr, const char *const *kws, int n)
+{
+    tr->keywords = calloc((size_t)n, sizeof(char *));
+    for (int i = 0; i < n; i++)
+        tr->keywords[i] = xstrdup(kws[i]);
+    tr->keyword_count = n;
+}
+
+static void test_trigger(void)
+{
+    CASE("extractor: chat standard line");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("chat");
+        tr->match = MATCH_CHAT;
+        tr->extractor = xstrdup("chat");
+        const char *kws[] = {"@pi"};
+        set_keywords(tr, kws, 1);
+
+        TriggerEvent ev;
+        bool ok = trigger_match(
+            &t, "[12:34:56] [Server thread/INFO]: <Steve> @pi 你好", &ev);
+        CHECK(ok);
+        if (ok) {
+            CHECK_STR(ev.player, "Steve");
+            CHECK_STR(ev.text, "你好");
+            CHECK(ev.trigger == tr);
+            trigger_event_free(&ev);
+        }
+        trigger_table_free(&t);
+    }
+
+    CASE("extractor: chat tolerates a bracketed tag");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("chat");
+        tr->match = MATCH_CHAT;
+        tr->extractor = xstrdup("chat");
+        const char *kws[] = {"@pi"};
+        set_keywords(tr, kws, 1);
+
+        TriggerEvent ev;
+        bool ok = trigger_match(
+            &t, "[12:34:56] [Server thread/INFO]: [Not Secure] <Steve> @pi hi",
+            &ev);
+        CHECK(ok);
+        if (ok) { CHECK_STR(ev.player, "Steve"); trigger_event_free(&ev); }
+        trigger_table_free(&t);
+    }
+
+    CASE("extractor: chat without a valid speaker does not match");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("chat");
+        tr->match = MATCH_CHAT;
+        tr->extractor = xstrdup("chat");
+        const char *kws[] = {"@pi"};
+        set_keywords(tr, kws, 1);
+
+        TriggerEvent ev;
+        CHECK(!trigger_match(
+            &t, "[12:34:56] [Server thread/INFO]: joined the game", &ev));
+        trigger_table_free(&t);
+    }
+
+    CASE("extractor: keyword takes the preceding token as player");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("join");
+        tr->match = MATCH_KEYWORD;
+        tr->extractor = xstrdup("keyword");
+        const char *kws[] = {"joined the game"};
+        set_keywords(tr, kws, 1);
+
+        TriggerEvent ev;
+        bool ok = trigger_match(
+            &t, "[12:34:56] [Server thread/INFO]: YYM joined the game", &ev);
+        CHECK(ok);
+        if (ok) {
+            CHECK_STR(ev.player, "YYM");
+            CHECK_STR(ev.text, "");
+            trigger_event_free(&ev);
+        }
+        trigger_table_free(&t);
+    }
+
+    CASE("extractor: keyword with no valid name yields player none");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("join");
+        tr->match = MATCH_KEYWORD;
+        tr->extractor = xstrdup("keyword");
+        const char *kws[] = {"joined the game"};
+        set_keywords(tr, kws, 1);
+
+        TriggerEvent ev;
+        bool ok = trigger_match(&t, "joined the game", &ev);
+        CHECK(ok);
+        if (ok) {
+            CHECK_STR(ev.player, "none");
+            trigger_event_free(&ev);
+        }
+        trigger_table_free(&t);
+    }
+
+    CASE("extractor: keyword token with punctuation is rejected");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("join");
+        tr->match = MATCH_KEYWORD;
+        tr->extractor = xstrdup("keyword");
+        const char *kws[] = {"joined the game"};
+        set_keywords(tr, kws, 1);
+
+        TriggerEvent ev;
+        bool ok = trigger_match(&t, "[12:34:56] joined the game", &ev);
+        CHECK(ok);
+        if (ok) { CHECK_STR(ev.player, "none"); trigger_event_free(&ev); }
+        trigger_table_free(&t);
+    }
+
+    CASE("trigger: multiple keywords on one trigger");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("chat");
+        tr->match = MATCH_CHAT;
+        tr->extractor = xstrdup("chat");
+        const char *kws[] = {"@pi", "@ai"};
+        set_keywords(tr, kws, 2);
+
+        TriggerEvent ev;
+        bool ok = trigger_match(
+            &t, "[12:34:56] [Server thread/INFO]: <Alex> @ai 你好", &ev);
+        CHECK(ok);
+        if (ok) { CHECK_STR(ev.text, "你好"); trigger_event_free(&ev); }
+        trigger_table_free(&t);
+    }
+
+    CASE("trigger: first match wins");
+    {
+        TriggerTable t = {0};
+        Trigger *a = trigger_table_append(&t);
+        a->name = xstrdup("chat");
+        a->match = MATCH_CHAT;
+        a->extractor = xstrdup("chat");
+        const char *kwa[] = {"@pi"};
+        set_keywords(a, kwa, 1);
+
+        Trigger *b = trigger_table_append(&t);
+        b->name = xstrdup("join");
+        b->match = MATCH_KEYWORD;
+        b->extractor = xstrdup("keyword");
+        const char *kwb[] = {"hello"};
+        set_keywords(b, kwb, 1);
+
+        /* The line satisfies both triggers; the earlier one must win. */
+        TriggerEvent ev;
+        bool ok = trigger_match(
+            &t, "[12:34:56] [Server thread/INFO]: <Steve> @pi hello", &ev);
+        CHECK(ok);
+        if (ok) { CHECK_STR(ev.trigger->name, "chat"); trigger_event_free(&ev); }
+        trigger_table_free(&t);
+    }
+
+    CASE("trigger: no match produces no event");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("chat");
+        tr->match = MATCH_CHAT;
+        tr->extractor = xstrdup("chat");
+        const char *kws[] = {"@pi"};
+        set_keywords(tr, kws, 1);
+
+        TriggerEvent ev;
+        CHECK(!trigger_match(
+            &t, "[12:34:56] [Server thread/INFO]: Steve: hello", &ev));
+        trigger_table_free(&t);
+    }
+
+    CASE("trigger: validate rejects incompatible match/extractor");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("bad");
+        tr->match = MATCH_KEYWORD;
+        tr->extractor = xstrdup("chat");
+        const char *kws[] = {"x"};
+        set_keywords(tr, kws, 1);
+
+        char err[256];
+        CHECK(trigger_validate(&t, err, sizeof(err)) == -1);
+        trigger_table_free(&t);
+    }
+
+    CASE("trigger: validate rejects unknown extractor");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("bad");
+        tr->match = MATCH_CHAT;
+        tr->extractor = xstrdup("regex");
+        const char *kws[] = {"x"};
+        set_keywords(tr, kws, 1);
+
+        char err[256];
+        CHECK(trigger_validate(&t, err, sizeof(err)) == -1);
+        trigger_table_free(&t);
+    }
+
+    CASE("trigger: validate rejects duplicate names");
+    {
+        TriggerTable t = {0};
+        for (int i = 0; i < 2; i++) {
+            Trigger *tr = trigger_table_append(&t);
+            tr->name = xstrdup("dup");
+            tr->match = MATCH_CHAT;
+            tr->extractor = xstrdup("chat");
+            const char *kws[] = {"x"};
+            set_keywords(tr, kws, 1);
+        }
+        char err[256];
+        CHECK(trigger_validate(&t, err, sizeof(err)) == -1);
+        trigger_table_free(&t);
+    }
+
+    CASE("trigger: validate rejects an empty keyword set");
+    {
+        TriggerTable t = {0};
+        Trigger *tr = trigger_table_append(&t);
+        tr->name = xstrdup("nokw");
+        tr->match = MATCH_CHAT;
+        tr->extractor = xstrdup("chat");
+
+        char err[256];
+        CHECK(trigger_validate(&t, err, sizeof(err)) == -1);
+        trigger_table_free(&t);
     }
 }
 
@@ -454,6 +705,7 @@ int main(void)
 {
     test_util();
     test_parser();
+    test_trigger();
     test_pi_parse();
     test_rcon();
     test_worker_tellraw();

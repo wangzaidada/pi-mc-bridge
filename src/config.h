@@ -4,6 +4,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include "trigger.h"
 #include "util.h"
 
 typedef struct {
@@ -35,6 +36,10 @@ typedef struct {
     /* Scratch list of allowed names, built from `allow`. */
     char **allow_list;
     int    allow_count;
+
+    /* Trigger table. Without a configuration file this holds exactly one
+     * synthesized compatibility trigger (see config_load). */
+    TriggerTable triggers;
 } Config;
 
 /* Returns 0 on success, -1 on error (message already printed), -2 if --help
