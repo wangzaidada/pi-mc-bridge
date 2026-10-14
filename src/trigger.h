@@ -27,6 +27,15 @@ typedef struct Trigger {
     int         cooldown_ms;   /* <0 => inherit the global cooldown */
     char      **allow;         /* NULL/0 => inherit the global allow-list */
     int         allow_count;
+
+    /* Executor parameters read at build time (see executor.h). A NULL string or
+     * a non-positive number means "fall back to the merged global value". */
+    char       *template;      /* replier: reply template with {placeholders} */
+    char       *reply_shaper;  /* dialog: shaper name ("text") */
+    char       *model;         /* dialog: pi model override */
+    char       *reply_prefix;  /* dialog: reply prefix override */
+    int         max_len;       /* dialog: reply segment length override */
+    int         timeout_ms;    /* dialog: pi timeout override */
 } Trigger;
 
 typedef struct {

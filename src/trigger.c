@@ -119,6 +119,10 @@ void trigger_table_free(TriggerTable *t)
         free(tr->keywords);
         free(tr->extractor);
         free(tr->executor);
+        free(tr->template);
+        free(tr->reply_shaper);
+        free(tr->model);
+        free(tr->reply_prefix);
         for (int k = 0; k < tr->allow_count; k++)
             free(tr->allow[k]);
         free(tr->allow);

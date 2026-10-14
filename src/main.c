@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "agent.h"
 #include "config.h"
 #include "logwatcher.h"
 #include "parser.h"
@@ -30,57 +31,6 @@ static void interruptible_sleep(int ms)
     struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
     while (!g_stop && nanosleep(&ts, &ts) != 0)
         ; /* EINTR: ts holds the remaining time */
-}
-
-/* ---------- log line -> queue ---------- */
-
-typedef struct {
-    const Config *cfg;
-    TaskQueue    *queue;
-    RconClient   *rcon;
-} BridgeCtx;
-
-static void notify(Worker *w_unused, RconClient *rcon, const char *player,
-                   const char *text)
-{
-    (void)w_unused;
-    DynBuf cmd, resp;
-    dynbuf_init(&cmd);
-    dynbuf_init(&resp);
-    if (worker_build_tellraw(&cmd, player, text)) {
-        int rc = rcon_command(rcon, cmd.buf, &resp);
-        if (rc != RCON_ERR_NONE)
-            LOG_WARNF("could not notify %s (rcon error %d)", player, rc);
-    }
-    dynbuf_free(&cmd);
-    dynbuf_free(&resp);
-}
-
-static void on_log_line(const char *line, void *user)
-{
-    BridgeCtx *ctx = user;
-    TriggerEvent ev;
-
-    if (!trigger_match(&ctx->cfg->triggers, line, &ev))
-        return;
-
-    LOG_INFOF("request from %s (trigger '%s'): %.120s", ev.player,
-              ev.trigger->name, ev.text);
-
-    if (!config_player_allowed(ctx->cfg, ev.player)) {
-        LOG_INFOF("ignoring %s (not on the allow-list)", ev.player);
-        trigger_event_free(&ev);
-        return;
-    }
-
-    QueueStatus st = queue_push(ctx->queue, ev.player, ev.text);
-    if (st == QUEUE_FULL) {
-        LOG_WARNF("queue full, rejecting request from %s", ev.player);
-        notify(NULL, ctx->rcon, ev.player, "当前请求过多，请稍后再试。");
-    } else if (st == QUEUE_SHUTDOWN) {
-        LOG_INFOF("queue shutting down, dropping request from %s", ev.player);
-    }
-    trigger_event_free(&ev);
 }
 
 /* ---------- main ---------- */
@@ -128,9 +78,10 @@ int main(int argc, char **argv)
         goto cleanup_no_worker;
     }
 
-    BridgeCtx ctx = { .cfg = &cfg, .queue = &queue, .rcon = &rcon };
+    Agent agent;
+    agent_init(&agent, &cfg, &queue, &rcon);
     LogWatcher watcher;
-    logwatcher_init(&watcher, cfg.log_file, 0, on_log_line, &ctx);
+    logwatcher_init(&watcher, cfg.log_file, 0, agent_on_log_line, &agent);
 
     LOG_INFOF("bridge is running; Ctrl-C to stop");
 

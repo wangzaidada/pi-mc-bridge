@@ -1,5 +1,7 @@
 /* config.c - see config.h */
 #include "config.h"
+#include "configfile.h"
+#include "executor.h"
 #include "parser.h"
 
 #include <ctype.h>
@@ -28,8 +30,11 @@ static void set_defaults(Config *c)
     c->queue_max = 64;
     c->allow = NULL;
     c->log_level = LOG_INFO;
+    c->config_file = NULL;
     c->allow_list = NULL;
     c->allow_count = 0;
+    c->triggers.items = NULL;
+    c->triggers.count = 0;
 }
 
 static void replace(char **slot, const char *val)
@@ -57,6 +62,7 @@ static void apply_env(Config *c)
     if ((v = getenv("POLL_MS")))       c->poll_ms = atoi(v);
     if ((v = getenv("QUEUE_MAX")))     c->queue_max = atoi(v);
     if ((v = getenv("ALLOW_PLAYERS"))) replace(&c->allow, v);
+    if ((v = getenv("CONFIG_FILE")))   replace(&c->config_file, v);
     if ((v = getenv("LOG_LEVEL"))) {
         if (strcasecmp(v, "debug") == 0) c->log_level = LOG_DEBUG;
         else if (strcasecmp(v, "info") == 0) c->log_level = LOG_INFO;
@@ -136,6 +142,9 @@ static int parse_cli(Config *c, int argc, char **argv)
         } else if (strcmp(a, "--allow") == 0) {
             if (!(val = need_value(argc, argv, &i, a))) return -1;
             replace(&c->allow, val);
+        } else if (strcmp(a, "--config") == 0) {
+            if (!(val = need_value(argc, argv, &i, a))) return -1;
+            replace(&c->config_file, val);
         } else if (strcmp(a, "--log-level") == 0) {
             if (!(val = need_value(argc, argv, &i, a))) return -1;
             if (strcasecmp(val, "debug") == 0) c->log_level = LOG_DEBUG;
@@ -159,10 +168,12 @@ static int parse_cli(Config *c, int argc, char **argv)
 
 static int validate(Config *c)
 {
-    if (!c->rcon_pass || !*c->rcon_pass) {
+    if ((!c->config_file || !*c->config_file) &&
+        (!c->rcon_pass || !*c->rcon_pass)) {
         fprintf(stderr,
                 "error: RCON password is required "
-                "(--rcon-pass or RCON_PASSWORD)\n");
+                "(--rcon-pass, RCON_PASSWORD, or rcon_pass in the config "
+                "file)\n");
         return -1;
     }
     if (c->rcon_port < 1 || c->rcon_port > 65535) {
@@ -266,25 +277,93 @@ static int synth_default_trigger(Config *c)
     return 0;
 }
 
+/* Validate the final trigger table and bind each trigger to its executor.
+ * Shared by both the synthesized-trigger path and the config-file path. */
+static int finalize_triggers(Config *cfg)
+{
+    char err[256];
+    if (trigger_validate(&cfg->triggers, err, sizeof(err)) != 0) {
+        fprintf(stderr, "error: %s\n", err);
+        return -1;
+    }
+    if (cfg->triggers.count == 0) {
+        fprintf(stderr, "error: no triggers configured\n");
+        return -1;
+    }
+    if (trigger_bind_executors(&cfg->triggers, err, sizeof(err)) != 0) {
+        fprintf(stderr, "error: %s\n", err);
+        return -1;
+    }
+    return 0;
+}
+
+/* Resolve only the config-file path, from the environment then the command
+ * line. This is done before anything else is applied so the file can act as
+ * the lowest-precedence layer (file < env < CLI): the file supplies defaults
+ * that env and CLI are then allowed to override. */
+static void resolve_config_file(Config *c, int argc, char **argv)
+{
+    const char *v = getenv("CONFIG_FILE");
+    if (v)
+        replace(&c->config_file, v);
+    for (int i = 1; i + 1 < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0)
+            replace(&c->config_file, argv[i + 1]);
+    }
+}
+
+static bool wants_help(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
+            return true;
+    }
+    return false;
+}
+
 int config_load(Config *cfg, int argc, char **argv)
 {
     set_defaults(cfg);
+
+    /* --help short-circuits everything, even an unreadable config file. */
+    if (wants_help(argc, argv)) {
+        config_print_usage(stdout);
+        return -2;
+    }
+
+    /* Precedence: CLI > env > config file > default. The file is read first so
+     * that env and CLI can override its [global] values; that is why the
+     * config-file path is resolved on its own before any setting is applied. A
+     * config file can still supply the RCON password that validate() needs. */
+    resolve_config_file(cfg, argc, argv);
+    bool have_file = cfg->config_file && *cfg->config_file;
+    if (have_file) {
+        char ferr[256];
+        if (configfile_load(cfg->config_file, cfg, ferr, sizeof(ferr)) != 0) {
+            fprintf(stderr, "error: %s\n", ferr);
+            return -1;
+        }
+    }
+
     apply_env(cfg);
     int rc = parse_cli(cfg, argc, argv);
     if (rc != 0)
         return rc; /* -1 error, -2 help */
+
+    if (!have_file) {
+        if (synth_default_trigger(cfg) != 0) {
+            fprintf(stderr,
+                    "error: out of memory building the trigger table\n");
+            return -1;
+        }
+    }
+
     if (validate(cfg) != 0)
         return -1;
     build_allow_list(cfg);
-    if (synth_default_trigger(cfg) != 0) {
-        fprintf(stderr, "error: out of memory building the trigger table\n");
+
+    if (finalize_triggers(cfg) != 0)
         return -1;
-    }
-    char terr[256];
-    if (trigger_validate(&cfg->triggers, terr, sizeof(terr)) != 0) {
-        fprintf(stderr, "error: %s\n", terr);
-        return -1;
-    }
     return 0;
 }
 
@@ -316,6 +395,8 @@ void config_free(Config *cfg)
             free(cfg->allow_list[i]);
         free(cfg->allow_list);
     }
+    free(cfg->config_file);
+    trigger_unbind_executors(&cfg->triggers);
     trigger_table_free(&cfg->triggers);
     memset(cfg, 0, sizeof(*cfg));
 }
@@ -328,6 +409,7 @@ void config_print_usage(FILE *out)
 "Usage: pi-mc-bridge [options]\n"
 "\n"
 "Options (env var, default):\n"
+"  --config PATH        INI config file     (CONFIG_FILE, none)\n"
 "  --rcon-host HOST     RCON host           (RCON_HOST, 127.0.0.1)\n"
 "  --rcon-port PORT     RCON port           (RCON_PORT, 25575)\n"
 "  --rcon-pass PASS     RCON password       (RCON_PASSWORD, REQUIRED)\n"
