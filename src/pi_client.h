@@ -25,12 +25,33 @@ void pi_client_init(PiClient *c, const char *cmd, const char *model,
                     int timeout_ms);
 void pi_client_free(PiClient *c);
 
-/* Run pi for `prompt` and put the reply text into `answer` (reset first).
- * Returns PI_OK on success; otherwise a PI_ERR_* code. `err_detail`, when
- * non-NULL and on failure, is set to a heap string with the underlying reason
- * (caller frees) — useful for logging. */
-PiStatus pi_ask(PiClient *c, const char *prompt, DynBuf *answer,
-                char **err_detail);
+/* Override the model on an already-initialised client (NULL/empty clears it).
+ * Used to bind a per-trigger `model` without re-creating the client. */
+void pi_client_set_model(PiClient *c, const char *model);
+
+/* Override the timeout on an already-initialised client (ms; <=0 keeps the
+ * current value). */
+void pi_client_set_timeout(PiClient *c, int timeout_ms);
+
+/* Run pi for `prompt` and capture its raw stdout (unparsed NDJSON) into `raw`
+ * (reset first). Returns PI_OK when the child ran to completion (whatever its
+ * exit status), or the transport failure code (PI_ERR_SPAWN / PI_ERR_TIMEOUT).
+ * `err_detail`, when non-NULL and set, is a heap string with the underlying
+ * reason (caller frees). When `exit_status` is non-NULL it receives the
+ * waitpid status if the child exited, else it is left untouched — callers must
+ * initialise it to -1.
+ *
+ * This does NOT interpret pi's output: the reply shaper (reply.h) does that. */
+PiStatus pi_run(PiClient *c, const char *prompt, DynBuf *raw, char **err_detail,
+                int *exit_status);
+
+/* Interpret captured pi stdout: append the LAST assistant message_end's text
+ * blocks to `answer` (reset first). Returns PI_OK on success, or
+ * PI_ERR_NO_TEXT / PI_ERR_STOP. `err_detail`, when non-NULL and set, is a heap
+ * string (caller frees). `exit_status` disambiguates an empty stream that came
+ * from a crash (PI_ERR_EXIT) from a clean-but-empty one (PI_ERR_NO_TEXT). */
+PiStatus pi_extract_text(const char *raw, size_t len, int exit_status,
+                         DynBuf *answer, char **err_detail);
 
 /* --- exposed for unit tests --- */
 
@@ -39,5 +60,12 @@ PiStatus pi_ask(PiClient *c, const char *prompt, DynBuf *answer,
  * with stopReason "error". Returns true if any assistant message_end was seen. */
 bool pi_parse_stream(const char *data, size_t len, DynBuf *answer,
                      bool *stop_error, char **error_message);
+
+/* Build the argv pi is executed with:
+ *   <cmd> --mode json --no-session --no-tools [--model M] -p <prompt>
+ * The list is a fixed literal (no system-prompt argument) — the bridge carries
+ * stored data, it does not author prompts (design D3). Returns a NULL-terminated
+ * heap array (caller frees the array, not the borrowed strings). */
+char **pi_build_argv(PiClient *c, const char *prompt);
 
 #endif /* PI_MC_BRIDGE_PI_CLIENT_H */

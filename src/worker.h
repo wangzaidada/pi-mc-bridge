@@ -1,20 +1,22 @@
-/* worker.h - consumes tasks, calls pi, replies to players over RCON. */
+/* worker.h - consumes tasks, dispatches to the trigger's executor. */
 #ifndef PI_MC_BRIDGE_WORKER_H
 #define PI_MC_BRIDGE_WORKER_H
 
 #include <pthread.h>
 #include <stdbool.h>
 #include "config.h"
+#include "executor.h"
 #include "pi_client.h"
 #include "queue.h"
 #include "rcon_client.h"
 #include "util.h"
 
-/* Small fixed-capacity open-addressing table for per-player rate limiting. */
+/* Small fixed-capacity open-addressing table for rate limiting. The key is
+ * `<trigger-name>\x1f<player>`, so each trigger cools down independently. */
 #define RATE_SLOTS 128
 
 typedef struct {
-    char              *player;
+    char              *key;      /* owning: "<trigger>\\x1f<player>" */
     long long          last_ms;
     unsigned long long seq;      /* insertion order, for LRU eviction */
 } RateSlot;
@@ -24,6 +26,9 @@ typedef struct {
     PiClient       *pi;
     RconClient     *rcon;
     const Config   *cfg;
+
+    /* Services handed to executors (see executor.h). */
+    WorkerCtx       ctx;
 
     pthread_t       thread;
     bool            started;
@@ -43,9 +48,11 @@ void worker_free(Worker *w);
 
 /* --- exposed for unit tests --- */
 
-/* Returns true if `player` may act now; on true it records the current time.
- * Returns false if still inside the cooldown window. */
-bool worker_rate_allow(Worker *w, const char *player);
+/* Returns true if the (trigger, player) pair may act now; on true it records
+ * the current time. Uses the trigger's cooldown, or the global one when the
+ * trigger does not override it (<0). Returns false inside the cooldown. */
+bool worker_rate_allow(Worker *w, const struct Trigger *trigger,
+                       const char *player);
 
 /* Build `tellraw <player> {"text":"<escaped>"}` into `out` (reset first).
  * Returns false if the player name is invalid. */

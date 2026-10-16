@@ -4,9 +4,10 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include "trigger.h"
 #include "util.h"
 
-typedef struct {
+typedef struct Config {
     /* RCON */
     char *rcon_host;      /* default 127.0.0.1        (RCON_HOST) */
     int   rcon_port;      /* default 25575            (RCON_PORT) */
@@ -32,9 +33,16 @@ typedef struct {
     char *allow;          /* default NULL (all)       (ALLOW_PLAYERS, CSV) */
     LogLevel log_level;   /* default INFO             (LOG_LEVEL) */
 
+    /* configuration file; NULL => none (synthesize the default trigger) */
+    char *config_file;
+
     /* Scratch list of allowed names, built from `allow`. */
     char **allow_list;
     int    allow_count;
+
+    /* Trigger table. Without a configuration file this holds exactly one
+     * synthesized compatibility trigger (see config_load). */
+    TriggerTable triggers;
 } Config;
 
 /* Returns 0 on success, -1 on error (message already printed), -2 if --help

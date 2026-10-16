@@ -13,6 +13,7 @@ void task_free(Task *t)
     free(t->player);
     free(t->prompt);
     t->player = t->prompt = NULL;
+    t->trigger = NULL;
 }
 
 void queue_init(TaskQueue *q, int capacity)
@@ -48,7 +49,8 @@ void queue_free(TaskQueue *q)
     pthread_cond_destroy(&q->not_full);
 }
 
-QueueStatus queue_push(TaskQueue *q, const char *player, const char *prompt)
+QueueStatus queue_push(TaskQueue *q, const struct Trigger *trigger,
+                       const char *player, const char *prompt)
 {
     pthread_mutex_lock(&q->lock);
     if (q->shutdown) {
@@ -60,6 +62,7 @@ QueueStatus queue_push(TaskQueue *q, const char *player, const char *prompt)
         return QUEUE_FULL;
     }
     int idx = (q->head + q->count) % q->capacity;
+    q->slots[idx].trigger = trigger;
     q->slots[idx].player = xstrdup(player);
     q->slots[idx].prompt = xstrdup(prompt);
     q->count++;
